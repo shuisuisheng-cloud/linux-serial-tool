@@ -6,7 +6,9 @@ temperature_str="25.3"
 temperature=float(temperature_str)
 baudrate=9600
 threshold=30
-if temperature > threshold:
-    print("warning")
-else:
-    print("normal")
+def check_temperature(temp):
+    if temp > threshold:
+        return "warning"
+    else:
+        return "normal"
+print(check_temperature(temperature))
