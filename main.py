@@ -1,3 +1,4 @@
+import time
 threshold=30
 def check_temperature(temp):
     if temp > threshold:
@@ -12,6 +13,10 @@ def main():
     temperature_str="25.3"
     temperature=float(temperature_str)
     baudrate=9600
-    print(check_temperature(temperature))
+    count=1
+    while count <=5:
+        time.sleep(1)
+        print(check_temperature(temperature))
+        count +=1
 if __name__ == "__main__":    
     main()
