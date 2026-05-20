@@ -1,6 +1,9 @@
 import time
 import random
 threshold=30
+def save_line(line):
+    with open("logs/serial.log","a",encoding="utf-8") as f:
+        f.write(line+"\n")
 def check_temperature(temp):
     if temp > threshold:
         return "warning"
@@ -22,7 +25,9 @@ def main():
         temperature=parse_temperature(serial_data)
         temperature_str=str(temperature)
         time.sleep(1)
-        print("temperature:"+temperature_str,"status:"+check_temperature(temperature))
+        log="temperature:"+temperature_str+" "+"status:"+check_temperature(temperature)
+        save_line(str(log))
+        print(log)
         count +=1
 if __name__ == "__main__":    
     main()
