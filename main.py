@@ -3,8 +3,10 @@ import random
 import json
 import os
 import serial
-from mqtt_client import create_mqtt_client,connect_mqtt_client,publish_mqtt_message,disconnect_mqtt_client,configure_mqtt_last_will
+import threading
+from mqtt_client import create_mqtt_client,connect_mqtt_client,publish_mqtt_message,disconnect_mqtt_client,configure_mqtt_last_will,publish_command_ack
 from gateway_status import build_heartbeat_payload,build_gateway_status_payload
+from command_handler import parse_stm32_ack,build_command_ack
 def open_ser_port(port,baudrate):
     try:
         ser=serial.Serial(port,baudrate,timeout=0.2,write_timeout=0.2)
@@ -29,6 +31,8 @@ def read_data_from_port(ser):
         return None
     except UnicodeDecodeError as e:
         print(f"串口数据解码失败: {e}")
+        print(f"raw bytes: {raw_data!r}")
+        print(f"raw hex: {raw_data.hex(' ')}")
         return None
 def close_ser_port(ser):
     if ser is not None and ser.is_open:
@@ -79,7 +83,37 @@ def handle_invalid_data(device,data,timestatus):
 def handle_debug_data(serial_data):
     print(f"stm32 debug: {serial_data}")
     return None
-def process_serial_data(device,serial_data,threshold):
+def process_serial_data(device,serial_data,threshold,command_state,client,ack_topic):
+    match=False
+    ack_state=False
+    unexpect=False
+    if serial_data.startswith("ack:"):
+        ack_data = parse_stm32_ack(serial_data)
+        if ack_data is None:
+            print(f"malformed stm32 ack: {serial_data}")
+            return None
+        with command_state["lock"]:
+            if command_state["pending_command"]==ack_data["command"]:
+                command_state["pending_command"]=None
+                command_state["pending_since"]=None
+                match=True
+            elif command_state["pending_command"]==None:
+                unexpect=True
+            elif command_state["pending_command"]!=ack_data["command"]:
+                waiting_command=command_state["pending_command"]
+        if unexpect==True:
+            print(f"unexcepted ack:{ack_data}")
+            return None
+        if match==False:
+            print(f"received ack:{ack_data},waiting ack:{waiting_command}")
+            return None
+        if match==True:
+            print("valid stm32 ack:",f"command={ack_data['command']}",f"status={ack_data['status']}")
+            if ack_data["status"]=="success":
+                ack_state=True
+            ack_payload=build_command_ack(ack_data["command"],ack_state)
+            publish_command_ack(client,ack_topic,ack_payload)
+        return None
     parts=serial_data.split(":")
     timestamp=get_timestamp()
     if parts[0]!="temperature":
@@ -116,10 +150,12 @@ def main():
     heartbeat_topic = (f"{mqtt_topic_prefix}/gateway/{mqtt_client_id}/heartbeat")
     status_topic=(f"{mqtt_topic_prefix}/gateway/{mqtt_client_id}/status")
     test_data = ["temperature:28.6","temperature:abc","error_data","temperature:","temperature:31.5",
-                 "temperature:26.4:extra","DHT11 raw: 41 0 26 4 71","DHT11 response: TIMEOUT","board:STM32F407VET6_CORE_BOARD_V2","KEY PRESSED"]
+                 "temperature:26.4:extra","DHT11 raw: 41 0 26 4 71","DHT11 response: TIMEOUT","board:STM32F407VET6_CORE_BOARD_V2","KEY PRESSED"
+                 "ack:led_on:success","ack:led_off:failed","ack:led_on:unknown","ack::success","rx:led_on","DHT11 raw: 33 0 24 7 64","temperature:25.4"]
     online_status_payload=build_gateway_status_payload(mqtt_client_id,device,"online","connected")
     mqtt_client=None
     ser=None
+    command_state={"pending_command":None,"pending_since":None,"lock":threading.Lock()}
     use_mock_serial = not use_real_serial
     if use_real_serial:
         print("real serial mode")
@@ -148,7 +184,8 @@ def main():
             online_status_payload,
             mqtt_reconnect_first_waiting_time,
             mqtt_reconnect_max_waiting_time,
-            ser
+            ser,
+            command_state
         )
     else:
         print("mqtt disabled")
@@ -176,7 +213,7 @@ def main():
                 if ser is not None:
                     serial_data=read_data_from_port(ser)
             if serial_data is not None:
-                payload = process_serial_data(device,serial_data,threshold)
+                payload = process_serial_data(device,serial_data,threshold,command_state,mqtt_client,ack_topic)
                 if mqtt_client is not None and mqtt_client.is_connected() and payload is not None:
                     publish_mqtt_message(mqtt_client,telemetry_topic,payload)
             if current_time - last_heartbeat_time >= heartbeat_interval:

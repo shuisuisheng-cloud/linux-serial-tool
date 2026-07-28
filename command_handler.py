@@ -78,3 +78,17 @@ def send_command_to_serial(ser, command):
     except serial.SerialException as e:
         print(f"serial write failed: {e}")
         return False
+def parse_stm32_ack(serial_data):
+    right_ack={}
+    if not isinstance(serial_data, str):
+        return None
+    serial_data=serial_data.strip()
+    parts=serial_data.split(":")
+    if len(parts)!=3:
+        return None
+    if parts[0]=="ack" and parts[1]!="" and parts[2] in ("success","failed"):
+        right_ack["command"]=parts[1]
+        right_ack["status"]=parts[2]
+    else:
+        return None
+    return right_ack
