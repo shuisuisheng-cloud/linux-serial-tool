@@ -1,5 +1,6 @@
 import json
 import serial
+import time
 def parse_command_payload(payload_text):
     try:
         command_data=json.loads(payload_text)
@@ -30,17 +31,21 @@ def execute_command(command):
     else:
         print("unsupported command:", command)
         return False
-def build_command_ack(command, success):
-    if success:
-        status = "success"
-    else:
-        status = "failed"
-
+def build_command_ack(command, status):
+    if not isinstance(command,str):
+        raise TypeError(f"command type must be str")
+    command=command.strip()
+    if not command:
+        raise ValueError(f"command can not be empty")
+    if not isinstance(status,str):
+        raise TypeError(f"status must be str:{status}")
+    status=status.strip()
+    if status not in ("success","failed","timeout"):
+        raise ValueError(f"status value is not admitted:{status}")
     ack_data = {
         "command": command,
         "status": status
     }
-
     return json.dumps(ack_data)
 def send_command_to_serial(ser, command):
     if ser is None:
@@ -92,3 +97,20 @@ def parse_stm32_ack(serial_data):
     else:
         return None
     return right_ack
+def check_command_ack_timeout(command_state, timeout_seconds):
+    with command_state["lock"]:
+        pending_command=command_state["pending_command"]
+        pending_since=command_state["pending_since"]
+        if pending_command is None:
+            return None
+        if pending_since is None:
+            return None
+        else:
+            elapsed=time.monotonic()-pending_since
+        if elapsed >=timeout_seconds:
+            command=pending_command
+            command_state["pending_command"]=None
+            command_state["pending_since"]=None
+        else:
+            return None
+    return command

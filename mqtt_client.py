@@ -78,16 +78,18 @@ def on_message(client,userdata,message):
             command_state["pending_since"]=time.monotonic()
     if is_busy is True:
         print(f"command_state is busy,is_busy:{is_busy}")
-        ack_payload=build_command_ack(command,False)
+        ack_payload=build_command_ack(command,"failed")
         publish_command_ack(client,ack_topic,ack_payload)
         return
     serial_send_result=send_command_to_serial(serial_port,command)
+    if not serial_send_result:
+        str_serial_send_result="failed"
     if not serial_send_result:
         with command_state["lock"]:
             if command_state["pending_command"]==command:
                 command_state["pending_command"]=None
                 command_state["pemding_since"]=None
-        ack_payload=build_command_ack(command,serial_send_result)
+        ack_payload=build_command_ack(command,str_serial_send_result)
         publish_command_ack(client,ack_topic,ack_payload)
     else:
         print("waiting for STM32 ack")

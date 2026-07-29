@@ -6,7 +6,7 @@ import serial
 import threading
 from mqtt_client import create_mqtt_client,connect_mqtt_client,publish_mqtt_message,disconnect_mqtt_client,configure_mqtt_last_will,publish_command_ack
 from gateway_status import build_heartbeat_payload,build_gateway_status_payload
-from command_handler import parse_stm32_ack,build_command_ack
+from command_handler import parse_stm32_ack,build_command_ack,check_command_ack_timeout
 def open_ser_port(port,baudrate):
     try:
         ser=serial.Serial(port,baudrate,timeout=0.2,write_timeout=0.2)
@@ -85,7 +85,6 @@ def handle_debug_data(serial_data):
     return None
 def process_serial_data(device,serial_data,threshold,command_state,client,ack_topic):
     match=False
-    ack_state=False
     unexpect=False
     if serial_data.startswith("ack:"):
         ack_data = parse_stm32_ack(serial_data)
@@ -109,9 +108,7 @@ def process_serial_data(device,serial_data,threshold,command_state,client,ack_to
             return None
         if match==True:
             print("valid stm32 ack:",f"command={ack_data['command']}",f"status={ack_data['status']}")
-            if ack_data["status"]=="success":
-                ack_state=True
-            ack_payload=build_command_ack(ack_data["command"],ack_state)
+            ack_payload=build_command_ack(ack_data["command"],ack_data["status"])
             publish_command_ack(client,ack_topic,ack_payload)
         return None
     parts=serial_data.split(":")
@@ -144,6 +141,7 @@ def main():
     heartbeat_interval = config["heartbeat_interval"]
     mqtt_reconnect_first_waiting_time=config["mqtt_reconnect_first_waiting_time"]
     mqtt_reconnect_max_waiting_time=config["mqtt_reconnect_max_waiting_time"]
+    command_ack_timeout=config["command_ack_timeout"]
     telemetry_topic = f"{mqtt_topic_prefix}/{device}/telemetry"
     command_topic = f"{mqtt_topic_prefix}/{device}/command"
     ack_topic =f"{mqtt_topic_prefix}/{device}/ack"
@@ -222,6 +220,11 @@ def main():
                     heartbeat_payload=(build_heartbeat_payload(mqtt_client_id,device,timestamp))
                     publish_mqtt_message(mqtt_client,heartbeat_topic,heartbeat_payload)
                 last_heartbeat_time=current_time
+            timeout_command=check_command_ack_timeout(command_state,command_ack_timeout)
+            if timeout_command is not None:
+                print(f"{timeout_command} is timeout")
+                ack_payload = build_command_ack(timeout_command,"timeout")
+                publish_command_ack(mqtt_client,ack_topic,ack_payload)
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("\ngateway shutdown requested")
