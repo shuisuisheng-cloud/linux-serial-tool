@@ -16,5 +16,6 @@
     "heartbeat_interval": 10,
     "mqtt_reconnect_first_waiting_time":5,
     "mqtt_reconnect_max_waiting_time":30,
-    "command_ack_timeout": 3.0
+    "command_ack_timeout": 3.0,
+    "serial_reconnect_interval": 3.0
 }

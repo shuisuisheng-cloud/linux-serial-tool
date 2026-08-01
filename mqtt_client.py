@@ -28,9 +28,9 @@ def create_mqtt_client(client_id):
     )
     return client
 def connect_mqtt_client(client,broker,port,keepalive,command_topic,ack_topic,status_topic,online_status_payload,
-                        mqtt_reconnect_first_waiting_time,mqtt_reconnect_max_waiting_time,serial_port,command_state):
+                        mqtt_reconnect_first_waiting_time,mqtt_reconnect_max_waiting_time,serial_state,command_state,):
     client.user_data_set({"command_topic":command_topic,"ack_topic":ack_topic,"status_topic":status_topic,
-                          "online_status_payload":online_status_payload,"serial_port":serial_port,
+                          "online_status_payload":online_status_payload,"serial_state":serial_state,
                           "command_state":command_state})
     client.on_disconnect=on_disconnect
     client.on_connect_fail=on_connect_fail
@@ -59,7 +59,7 @@ def publish_command_ack(client,topic,payload):
 def on_message(client,userdata,message):
     topic=message.topic
     payload=message.payload.decode("utf-8")
-    serial_port = userdata.get("serial_port")
+    serial_state = userdata.get("serial_state")
     ack_topic=userdata["ack_topic"]
     command_state=userdata["command_state"]
     is_busy=False
@@ -81,15 +81,15 @@ def on_message(client,userdata,message):
         ack_payload=build_command_ack(command,"failed")
         publish_command_ack(client,ack_topic,ack_payload)
         return
-    serial_send_result=send_command_to_serial(serial_port,command)
-    if not serial_send_result:
-        str_serial_send_result="failed"
+    with serial_state["lock"]:
+        serial_port = serial_state["port"]
+        serial_send_result = send_command_to_serial(serial_port,command)
     if not serial_send_result:
         with command_state["lock"]:
             if command_state["pending_command"]==command:
                 command_state["pending_command"]=None
                 command_state["pemding_since"]=None
-        ack_payload=build_command_ack(command,str_serial_send_result)
+        ack_payload=build_command_ack(command,"failed")
         publish_command_ack(client,ack_topic,ack_payload)
     else:
         print("waiting for STM32 ack")

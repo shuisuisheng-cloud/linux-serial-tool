@@ -4,6 +4,9 @@ import json
 import os
 import serial
 import threading
+SERIAL_NO_DATA = "SERIAL_NO_DATA"
+SERIAL_DATA = "SERIAL_DATA"
+SERIAL_DISCONNECTED = "SERIAL_DISCONNECTED"
 from mqtt_client import create_mqtt_client,connect_mqtt_client,publish_mqtt_message,disconnect_mqtt_client,configure_mqtt_last_will,publish_command_ack
 from gateway_status import build_heartbeat_payload,build_gateway_status_payload
 from command_handler import parse_stm32_ack,build_command_ack,check_command_ack_timeout
@@ -17,23 +20,26 @@ def open_ser_port(port,baudrate):
         return None
 def read_data_from_port(ser):
     if ser is None:
-        return None
+        return (SERIAL_DISCONNECTED,None)
     try:
         raw_data = ser.readline()
         if raw_data == b"":
-            return None
+            return (SERIAL_NO_DATA,None)
         line = raw_data.decode("utf-8").strip()
         if line == "":
-            return None
-        return line
+            return (SERIAL_NO_DATA,None)
+        return (SERIAL_DATA,line)
     except serial.SerialException as e:
         print(f"串口读取失败: {e}")
-        return None
+        return (SERIAL_DISCONNECTED,None)
     except UnicodeDecodeError as e:
         print(f"串口数据解码失败: {e}")
         print(f"raw bytes: {raw_data!r}")
         print(f"raw hex: {raw_data.hex(' ')}")
-        return None
+        return (SERIAL_NO_DATA,None)
+    except OSError as e:
+        print(f"OSError:{e}")
+        return (SERIAL_DISCONNECTED,None)
 def close_ser_port(ser):
     if ser is not None and ser.is_open:
         try:
@@ -42,6 +48,8 @@ def close_ser_port(ser):
 
         except serial.SerialException as e:
             print(f"关闭串口失败: {e}")
+        except OSError as e:
+            print(f"关闭串口失败:{e}")
 def save_line(line):
     os.makedirs("logs", exist_ok=True)
     with open("logs/serial.log","a",encoding="utf-8") as f:
@@ -139,6 +147,7 @@ def main():
     mqtt_keepalive = config["mqtt_keepalive"]
     use_real_serial=config["use_real_serial"]
     heartbeat_interval = config["heartbeat_interval"]
+    serial_reconnect_interval=config["serial_reconnect_interval"]
     mqtt_reconnect_first_waiting_time=config["mqtt_reconnect_first_waiting_time"]
     mqtt_reconnect_max_waiting_time=config["mqtt_reconnect_max_waiting_time"]
     command_ack_timeout=config["command_ack_timeout"]
@@ -152,17 +161,15 @@ def main():
                  "ack:led_on:success","ack:led_off:failed","ack:led_on:unknown","ack::success","rx:led_on","DHT11 raw: 33 0 24 7 64","temperature:25.4"]
     online_status_payload=build_gateway_status_payload(mqtt_client_id,device,"online","connected")
     mqtt_client=None
-    ser=None
     command_state={"pending_command":None,"pending_since":None,"lock":threading.Lock()}
+    serial_state={"port":None,"lock":threading.Lock()}
     use_mock_serial = not use_real_serial
     if use_real_serial:
         print("real serial mode")
-        ser = open_ser_port(port, baudrate)
-
-        if ser is None:
+        serial_state["port"]= open_ser_port(port, baudrate)
+        if serial_state["port"] is None:
             print(f"打开串口失败: {port}")
-            print("fallback to mock serial mode")
-            use_mock_serial = True
+            print("real serial unavailable, waiting for reconnect")
     else:
         print("mock serial mode")
 
@@ -182,7 +189,7 @@ def main():
             online_status_payload,
             mqtt_reconnect_first_waiting_time,
             mqtt_reconnect_max_waiting_time,
-            ser,
+            serial_state,
             command_state
         )
     else:
@@ -196,24 +203,41 @@ def main():
 
     last_heartbeat_time=0.0
     last_mock_time=0.0
+    last_serial_reconnect_attempt=0.0
     test_data_number=0
     try:
         print("gateway running, press Ctrl+C to stop")
         while True:
             current_time=time.monotonic()
             serial_data=None
+            serial_status=SERIAL_NO_DATA
             if  use_mock_serial:
                 if current_time-last_mock_time>=2:
                     serial_data=test_data[test_data_number]
+                    serial_status=SERIAL_DATA
                     last_mock_time=current_time
                     test_data_number=(test_data_number+1)%len(test_data)
             else:
-                if ser is not None:
-                    serial_data=read_data_from_port(ser)
-            if serial_data is not None:
+                if serial_state["port"] is not None:
+                    serial_status,serial_data=read_data_from_port(serial_state["port"])
+            if serial_status==SERIAL_DISCONNECTED:
+                old_ser=serial_state["port"]
+                with serial_state["lock"]:
+                    if serial_state["port"]==old_ser:
+                        close_ser_port(serial_state["port"])
+                        serial_state["port"]=None
+            if serial_status==SERIAL_DATA:
                 payload = process_serial_data(device,serial_data,threshold,command_state,mqtt_client,ack_topic)
                 if mqtt_client is not None and mqtt_client.is_connected() and payload is not None:
                     publish_mqtt_message(mqtt_client,telemetry_topic,payload)
+            if current_time-last_serial_reconnect_attempt>=serial_reconnect_interval and serial_state["port"] is None and not use_mock_serial:
+                last_serial_reconnect_attempt=current_time
+                new_ser=open_ser_port(port,baudrate)
+                if new_ser is None:
+                    serial_state["port"]=None
+                else:
+                    with serial_state["lock"]:
+                        serial_state["port"]=new_ser
             if current_time - last_heartbeat_time >= heartbeat_interval:
                 if mqtt_client is not None and mqtt_client.is_connected():
                     timestamp=get_timestamp()
@@ -232,8 +256,8 @@ def main():
         if mqtt_client is not None and mqtt_client.is_connected():
             graceful_shutdown_Offline_Payload=build_gateway_status_payload(mqtt_client_id,device,"offline","graceful_shutdown")
             publish_mqtt_message(mqtt_client,status_topic,graceful_shutdown_Offline_Payload,retain=True)
-        if ser is not None and ser.is_open:
-            close_ser_port(ser)
+        if serial_state["port"] is not None and serial_state["port"].is_open:
+            close_ser_port(serial_state["port"])
         if mqtt_client is not None:
             disconnect_mqtt_client(mqtt_client)   
 if __name__ == "__main__":    
