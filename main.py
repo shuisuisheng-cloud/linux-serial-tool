@@ -18,6 +18,31 @@ def open_ser_port(port,baudrate):
     except serial.SerialException as e:
         print(f"打开串口 {port} 失败: {e}")
         return None
+def sync_serial_protocol_boundary(ser):
+    if ser is None:
+        print(f"ser is None")
+        return False
+    if not ser.is_open:
+        print(f"serial protocol sync failed: port is closed")
+        return False
+    try:
+        sync_data=b"\r\n"
+        written_count=ser.write(sync_data)
+        if written_count != len(sync_data):
+            print(f"写入失败：{written_count}")
+            return False
+        ser.flush()
+        print("同步成功")
+        return True
+    except serial.SerialTimeoutException as e:
+        print(f"串口发送超时：{e}")
+        return False
+    except serial.SerialException as e:
+        print(f"其他串口错误:{e}")
+        return False
+    except OSError as e:
+        print(f"底层系统错误：{e}")
+        return False
 def read_data_from_port(ser):
     if ser is None:
         return (SERIAL_DISCONNECTED,None)
@@ -166,10 +191,16 @@ def main():
     use_mock_serial = not use_real_serial
     if use_real_serial:
         print("real serial mode")
-        serial_state["port"]= open_ser_port(port, baudrate)
-        if serial_state["port"] is None:
+        candidate_ser=open_ser_port(port, baudrate)
+        if candidate_ser is None:
             print(f"打开串口失败: {port}")
             print("real serial unavailable, waiting for reconnect")
+        else:
+            sync_result=sync_serial_protocol_boundary(candidate_ser)
+            if sync_result is False:
+                close_ser_port(candidate_ser)
+            else:
+                serial_state["port"]=candidate_ser
     else:
         print("mock serial mode")
 
@@ -233,11 +264,13 @@ def main():
             if current_time-last_serial_reconnect_attempt>=serial_reconnect_interval and serial_state["port"] is None and not use_mock_serial:
                 last_serial_reconnect_attempt=current_time
                 new_ser=open_ser_port(port,baudrate)
-                if new_ser is None:
-                    serial_state["port"]=None
-                else:
-                    with serial_state["lock"]:
-                        serial_state["port"]=new_ser
+                if new_ser is not None:
+                    sync_result_reconnected=sync_serial_protocol_boundary(new_ser)
+                    if sync_result_reconnected is False:
+                        close_ser_port(new_ser)
+                    else:
+                        with serial_state["lock"]:
+                            serial_state["port"]=new_ser
             if current_time - last_heartbeat_time >= heartbeat_interval:
                 if mqtt_client is not None and mqtt_client.is_connected():
                     timestamp=get_timestamp()

@@ -88,7 +88,7 @@ def on_message(client,userdata,message):
         with command_state["lock"]:
             if command_state["pending_command"]==command:
                 command_state["pending_command"]=None
-                command_state["pemding_since"]=None
+                command_state["pending_since"]=None
         ack_payload=build_command_ack(command,"failed")
         publish_command_ack(client,ack_topic,ack_payload)
     else:
